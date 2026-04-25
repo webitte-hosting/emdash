@@ -61,13 +61,13 @@ export interface D1SessionDriverConfig {
 }
 
 export function d1SessionDriver(config: D1SessionDriverConfig = {}) {
-  // Astro session expects a `{ name, options }`-shaped descriptor whose
-  // entrypoint exports a default unstorage driver factory. Astro
-  // imports the entrypoint at build time.
+  // Astro's SessionDriverConfig is `{ entrypoint, config }`. The
+  // entrypoint module is imported at request time and its default
+  // export is called with `config` to produce a SessionDriver
+  // (3 methods: getItem / setItem / removeItem).
   return {
-    name: 'webitte-d1-session',
     entrypoint: '@webitte-hosting/emdash/session/d1-runtime',
-    options: {
+    config: {
       binding: config.binding ?? 'DB',
       table: config.table ?? '_em_sessions',
     },
