@@ -1,0 +1,59 @@
+{
+  "name": "@webitte-hosting/emdash",
+  "version": "0.1.1",
+  "description": "Multi-tenant isolation adapters for EmDash on Cloudflare. R2 prefixing, D1-backed Astro session driver, tenant-scoped Cloudflare Images / Stream / Vectorize.",
+  "license": "MIT",
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/webitte-hosting/emdash.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./storage/r2-runtime": {
+      "types": "./dist/storage/r2-runtime.d.ts",
+      "default": "./dist/storage/r2-runtime.js"
+    },
+    "./session/d1-runtime": {
+      "types": "./dist/session/d1-runtime.d.ts",
+      "default": "./dist/session/d1-runtime.js"
+    },
+    "./media/images-runtime": {
+      "types": "./dist/media/images-runtime.d.ts",
+      "default": "./dist/media/images-runtime.js"
+    },
+    "./media/stream-runtime": {
+      "types": "./dist/media/stream-runtime.d.ts",
+      "default": "./dist/media/stream-runtime.js"
+    },
+    "./vectorize/runtime": {
+      "types": "./dist/vectorize/runtime.d.ts",
+      "default": "./dist/vectorize/runtime.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "emdash": "^0.7.0",
+    "@emdash-cms/cloudflare": "^0.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260305.1",
+    "typescript": "^5.7.2"
+  }
+}
