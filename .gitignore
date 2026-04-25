@@ -1,4 +1,4 @@
-
-# Tenant package auth — written transient by _publish-emdash.cjs
+node_modules
+dist
 .npmrc
-
+*.tgz

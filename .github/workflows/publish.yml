@@ -26,6 +26,9 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@webitte-hosting'
       - run: pnpm install
+      # Test gate — descriptor + runtime suites must pass before we
+      # republish a new version.
+      - run: pnpm test
       - run: pnpm build
       - run: npm publish --access public
         env:

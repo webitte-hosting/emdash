@@ -46,7 +46,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "emdash": "^0.7.0",
@@ -54,6 +55,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260305.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
   }
 }
