@@ -111,4 +111,16 @@ describe('prefixedR2 runtime', () => {
       /TENANT_PREFIX/,
     )
   })
+
+  // EmDash's media upload route at /_emdash/api/media/upload-url checks
+  // err.code === 'NOT_SUPPORTED' to return 501 (admin UI then falls back
+  // to direct upload). A plain Error here would surface as a generic 500
+  // and break upload entirely.
+  it('getSignedUploadUrl throws EmDashStorageError with code=NOT_SUPPORTED', async () => {
+    const storage = createStorage({ binding: 'MEDIA', prefixEnvVar: 'TENANT_PREFIX' })
+    await expect(storage.getSignedUploadUrl()).rejects.toMatchObject({
+      name: 'EmDashStorageError',
+      code: 'NOT_SUPPORTED',
+    })
+  })
 })

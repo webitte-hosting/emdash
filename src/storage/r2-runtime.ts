@@ -10,6 +10,7 @@
 // `env.TENANT_PREFIX` MUST end with a `/`. wfp-deploy injects this.
 
 import { env } from 'cloudflare:workers'
+import { EmDashStorageError } from 'emdash'
 
 const TRAILING_SLASH_REGEX = /\/$/
 
@@ -134,8 +135,14 @@ class PrefixedR2Storage {
   }
 
   async getSignedUploadUrl(): Promise<never> {
-    throw new Error(
+    // EmDash's media upload route checks `error.code === 'NOT_SUPPORTED'`
+    // to return 501 (which the admin UI catches and falls back to direct
+    // upload through `/api/media`). Throwing a plain Error here would
+    // surface as a generic 500 with "Failed to generate upload URL" and
+    // skip the fallback.
+    throw new EmDashStorageError(
       'R2 bindings do not support pre-signed upload URLs. Upload through the Worker instead.',
+      'NOT_SUPPORTED',
     )
   }
 
