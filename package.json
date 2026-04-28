@@ -1,6 +1,6 @@
 {
   "name": "@webitte-hosting/emdash",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Multi-tenant isolation adapters for EmDash on Cloudflare. R2 prefixing, D1-backed Astro session driver, tenant-scoped Cloudflare Images / Stream / Vectorize.",
   "license": "MIT",
   "type": "module",
@@ -31,6 +31,10 @@
       "types": "./dist/session/d1-runtime.d.ts",
       "default": "./dist/session/d1-runtime.js"
     },
+    "./db/d1-rest": {
+      "types": "./dist/db/d1-rest-runtime.d.ts",
+      "default": "./dist/db/d1-rest-runtime.js"
+    },
     "./media/images-runtime": {
       "types": "./dist/media/images-runtime.d.ts",
       "default": "./dist/media/images-runtime.js"
@@ -51,10 +55,13 @@
   },
   "peerDependencies": {
     "emdash": "^0.7.0",
-    "@emdash-cms/cloudflare": "^0.7.0"
+    "@emdash-cms/cloudflare": "^0.7.0",
+    "kysely-d1": "^0.4.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260305.1",
+    "kysely": "^0.27.6",
+    "kysely-d1": "^0.4.0",
     "typescript": "^5.7.2",
     "vitest": "^3.0.5"
   }

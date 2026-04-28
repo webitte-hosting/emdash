@@ -1,0 +1,216 @@
+// Runtime entry for d1RestDriver — used by the dev sandbox to talk to the
+// tenant's *production* D1 over HTTP, without requiring a CF binding.
+//
+// Why: the webitte sandbox runs `astro dev` in a generic Node container.
+// There's no Workers runtime / miniflare D1 binding, so the standard
+// d1() driver from @emdash-cms/cloudflare fails with
+// "D1 binding 'DB' not found in environment". This driver substitutes a
+// minimal D1Database-shaped shim whose prepared-statement methods POST
+// to the CF D1 REST API.
+//
+// Three env vars are required (all read at request time, so a token
+// rotation only needs the sandbox env reloaded — no rebuild):
+//   CF_ACCOUNT_ID    — the platform's Cloudflare account
+//   CF_DATABASE_ID   — the tenant's d1_id (uuid)
+//   CF_API_TOKEN     — short-lived token scoped to this single d1_id
+//
+// Names are configurable via `d1RestDriver({ accountIdEnv, ... })` if
+// the host wants to use different env var names.
+
+import { env } from 'cloudflare:workers'
+import { D1Dialect } from 'kysely-d1'
+
+export interface D1RestRuntimeConfig {
+  accountIdEnv: string
+  databaseIdEnv: string
+  tokenEnv: string
+  endpoint: string
+}
+
+interface CfQueryEnvelope {
+  success: boolean
+  errors: Array<{ code: number; message: string }>
+  result: Array<{
+    success: boolean
+    results: unknown[]
+    meta: {
+      changes?: number
+      last_row_id?: number | null
+      duration?: number
+      rows_read?: number
+      rows_written?: number
+    }
+  }>
+}
+
+class D1RestError extends Error {
+  constructor(
+    public status: number,
+    public errors: Array<{ code: number; message: string }>,
+  ) {
+    const summary = errors.map((e) => `[${e.code}] ${e.message}`).join('; ') || `HTTP ${status}`
+    super(`d1-rest: ${summary}`)
+  }
+}
+
+function readEnv(name: string): string {
+  const value = (env as Record<string, unknown>)[name]
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      `d1RestDriver: env "${name}" is not set. The webitte sandbox is responsible for injecting it.`,
+    )
+  }
+  return value
+}
+
+/**
+ * Build a D1Database-shaped shim that proxies every operation to the CF
+ * D1 REST `/query` endpoint. The shim is safe to keep across requests —
+ * env vars are re-read on each call, so a rotated token takes effect at
+ * the next query without recreating the shim.
+ *
+ * Only the surface kysely-d1 + emdash actually use is implemented:
+ *   prepare(sql).bind(...).all()/first()/run()/raw()
+ *   batch([prepared, ...])
+ *   exec(sql)
+ * dump() throws — emdash never calls it.
+ */
+function makeShim(config: D1RestRuntimeConfig): D1Database {
+  const buildUrl = (suffix = ''): string => {
+    const account = readEnv(config.accountIdEnv)
+    const database = readEnv(config.databaseIdEnv)
+    return `${config.endpoint}/accounts/${account}/d1/database/${database}/${suffix || 'query'}`
+  }
+
+  async function postQuery(
+    body: unknown,
+    suffix?: string,
+  ): Promise<CfQueryEnvelope['result']> {
+    const token = readEnv(config.tokenEnv)
+    const res = await fetch(buildUrl(suffix), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    let envelope: CfQueryEnvelope
+    try {
+      envelope = (await res.json()) as CfQueryEnvelope
+    } catch {
+      throw new D1RestError(res.status, [{ code: 0, message: `non-JSON response (${res.status})` }])
+    }
+    if (!envelope.success || !Array.isArray(envelope.result)) {
+      throw new D1RestError(res.status, envelope.errors ?? [])
+    }
+    return envelope.result
+  }
+
+  function makeStatement(sql: string, params: readonly unknown[]): D1PreparedStatement {
+    const stmt = {
+      bind(...next: unknown[]): D1PreparedStatement {
+        return makeStatement(sql, next)
+      },
+      async first<T = unknown>(colName?: string): Promise<T | null> {
+        const [r] = await postQuery({ sql, params })
+        const row = (r.results[0] as Record<string, unknown> | undefined) ?? null
+        if (row === null) return null
+        if (colName !== undefined) return (row[colName] ?? null) as T
+        return row as T
+      },
+      async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+        const [r] = await postQuery({ sql, params })
+        return {
+          results: r.results as T[],
+          success: true,
+          meta: r.meta as unknown as D1Meta & Record<string, unknown>,
+        }
+      },
+      async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+        const [r] = await postQuery({ sql, params })
+        return {
+          results: (r.results as T[]) ?? [],
+          success: true,
+          meta: r.meta as unknown as D1Meta & Record<string, unknown>,
+        }
+      },
+      async raw<T = unknown[]>(_options?: { columnNames?: boolean }): Promise<T[]> {
+        // The /query endpoint returns objects keyed by column name. To
+        // honor the raw() contract (array of arrays), we flatten in JS.
+        // Column order matches Object.keys order on the first row.
+        const [r] = await postQuery({ sql, params })
+        const rows = r.results as Array<Record<string, unknown>>
+        if (rows.length === 0) return [] as T[]
+        const cols = Object.keys(rows[0])
+        return rows.map((row) => cols.map((c) => row[c])) as T[]
+      },
+    }
+    return stmt as unknown as D1PreparedStatement
+  }
+
+  return {
+    prepare(sql: string): D1PreparedStatement {
+      return makeStatement(sql, [])
+    },
+
+    async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+      // The CF /query endpoint accepts an array of {sql, params} objects.
+      // statements is opaque from our side — but each one was created by
+      // makeStatement above, where (sql, params) are captured in closure.
+      // We can't read them back, so we issue separate calls. This is not
+      // a real transaction; emdash uses batch primarily for bulk inserts
+      // where atomicity-on-failure is acceptable to lose for now.
+      const results: D1Result<T>[] = []
+      for (const s of statements) {
+        const r = await s.all<T>()
+        results.push(r as D1Result<T>)
+      }
+      return results
+    },
+
+    async exec(query: string): Promise<D1ExecResult> {
+      const result = await postQuery({ sql: query, params: [] })
+      const total = result.reduce((sum, r) => sum + (r.results?.length ?? 0), 0)
+      const duration = result.reduce((sum, r) => sum + (r.meta.duration ?? 0), 0)
+      return { count: total, duration }
+    },
+
+    async dump(): Promise<ArrayBuffer> {
+      throw new Error('d1RestDriver: dump() is not supported over the REST API')
+    },
+
+    // D1 Sessions API — we explicitly opt out. Kysely never reads this,
+    // and emdash's middleware checks for the function existence (see
+    // createRequestScopedDb in @emdash-cms/cloudflare); leaving it
+    // undefined means emdash skips per-request scoping.
+    withSession: undefined as unknown as D1Database['withSession'],
+  } as unknown as D1Database
+}
+
+export function createDialect(rawConfig: Record<string, unknown>): unknown {
+  const config: D1RestRuntimeConfig = {
+    accountIdEnv: (rawConfig.accountIdEnv as string) || 'CF_ACCOUNT_ID',
+    databaseIdEnv: (rawConfig.databaseIdEnv as string) || 'CF_DATABASE_ID',
+    tokenEnv: (rawConfig.tokenEnv as string) || 'CF_API_TOKEN',
+    endpoint: (rawConfig.endpoint as string) || 'https://api.cloudflare.com/client/v4',
+  }
+  // Validate URL early — a malformed endpoint silently breaks every query.
+  try {
+    new URL(config.endpoint)
+  } catch {
+    throw new Error(`d1RestDriver: invalid endpoint ${JSON.stringify(config.endpoint)}`)
+  }
+  const shim = makeShim(config)
+  return new D1Dialect({ database: shim })
+}
+
+/**
+ * D1 Sessions API — bookmark-based read-your-writes — isn't exposed by the
+ * REST `/query` endpoint, so per-request scoping is a no-op in REST mode.
+ * Returning null tells emdash's middleware to fall back to the singleton
+ * Kysely instance for every request.
+ */
+export function createRequestScopedDb(): null {
+  return null
+}

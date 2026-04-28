@@ -51,6 +51,18 @@ export default function createDriver(rawConfig: Record<string, unknown> | undefi
     throw new Error(`d1SessionDriver: invalid table name "${tableName}"`)
   }
 
+  // Sandbox/dev fallback: when the D1 binding isn't attached (because
+  // astro dev is running against a REST-mode database via d1RestDriver
+  // and there's no `env.DB`), degrade to a per-process in-memory store.
+  // This is fine for the dev sandbox — sessions don't need to survive
+  // process restarts, and there's only one user at a time. Production
+  // tenant Workers always hit the D1 path because wfp-deploy attaches
+  // the binding before the script ever runs.
+  const bindingValue = (env as Record<string, unknown>)[binding]
+  if (!bindingValue) {
+    return makeMemoryDriver()
+  }
+
   function db(): D1Database {
     const value = (env as Record<string, unknown>)[binding] as D1Database | undefined
     if (!value) {
@@ -94,6 +106,35 @@ export default function createDriver(rawConfig: Record<string, unknown> | undefi
       const conn = db()
       await ensureSchema(conn, tableName)
       await conn.prepare(`DELETE FROM ${tableName} WHERE key = ?1`).bind(key).run()
+    },
+  }
+}
+
+// Per-process in-memory session store. Used only when the D1 binding is
+// missing (sandbox / dev). A single Worker instance / dev process keeps
+// its own Map; sessions evaporate on restart, which for a one-user dev
+// sandbox is the correct behaviour anyway.
+function makeMemoryDriver(): SessionDriver {
+  const store = new Map<string, { value: string; expiresAt: number | null }>()
+
+  return {
+    async getItem(key) {
+      const entry = store.get(key)
+      if (!entry) return null
+      if (entry.expiresAt !== null && entry.expiresAt <= Date.now()) {
+        store.delete(key)
+        return null
+      }
+      return entry.value
+    },
+
+    async setItem(key, value, opts) {
+      const expiresAt = opts?.ttl ? Date.now() + opts.ttl * 1000 : null
+      store.set(key, { value, expiresAt })
+    },
+
+    async removeItem(key) {
+      store.delete(key)
     },
   }
 }

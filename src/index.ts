@@ -3,7 +3,7 @@
 // lives at the per-feature *-runtime entrypoints — they import
 // `cloudflare:workers` and only run inside a Worker.
 
-import type { StorageDescriptor } from 'emdash'
+import type { DatabaseDescriptor, StorageDescriptor } from 'emdash'
 // MediaProviderDescriptor is exported from emdash/media. We use a structural
 // fallback type to avoid coupling to that subpath.
 type MediaProviderDescriptor<T = unknown> = {
@@ -58,6 +58,64 @@ export interface D1SessionDriverConfig {
   binding?: string
   /** Override table name. Defaults to `_em_sessions`. */
   table?: string
+}
+
+// ───────────────────────────────────────────────────────────────────
+// D1 driver that talks to a remote D1 over the Cloudflare REST API.
+//
+// Used by the webitte dev sandbox: `astro dev` runs in a generic Node
+// container with no Workers runtime, so the standard `d1({ binding })`
+// driver from @emdash-cms/cloudflare can't find env.DB and the whole
+// emdash runtime fails to initialize.
+//
+// This driver doesn't read a CF binding at all — it expects three env
+// vars (CF_ACCOUNT_ID / CF_DATABASE_ID / CF_API_TOKEN by default) and
+// POSTs every query to /accounts/{a}/d1/database/{d}/query. The values
+// are resolved at request time, so a token rotation only requires the
+// sandbox env to be reloaded; no rebuild needed.
+//
+// Production tenants keep using d1({ binding: "DB" }) — the REST shim
+// is purely a dev-time convenience. Branch on `process.env.WEBITTE_SANDBOX`
+// in astro.config.mjs to choose between them.
+//
+// Limitations:
+// - No D1 Sessions API support (the REST endpoint doesn't expose
+//   bookmarks). Per-request read replicas degrade to "always primary",
+//   which for a single-tenant sandbox is fine.
+// - batch() executes statements sequentially, not atomically — if you
+//   need a real transaction, run the migration against the deployed
+//   tenant Worker instead.
+// - dump() throws.
+
+export interface D1RestDriverConfig {
+  /** Env var holding the CF account id. Default `CF_ACCOUNT_ID`. */
+  accountIdEnv?: string
+  /** Env var holding the tenant's d1 uuid. Default `CF_DATABASE_ID`. */
+  databaseIdEnv?: string
+  /** Env var holding the (short-lived) CF API token. Default `CF_API_TOKEN`. */
+  tokenEnv?: string
+  /**
+   * REST API base URL. Override only for testing (e.g. against a fake
+   * CF gateway). Default `https://api.cloudflare.com/client/v4`.
+   */
+  endpoint?: string
+}
+
+export function d1RestDriver(config: D1RestDriverConfig = {}): DatabaseDescriptor {
+  return {
+    entrypoint: '@webitte-hosting/emdash/db/d1-rest',
+    config: {
+      accountIdEnv: config.accountIdEnv ?? 'CF_ACCOUNT_ID',
+      databaseIdEnv: config.databaseIdEnv ?? 'CF_DATABASE_ID',
+      tokenEnv: config.tokenEnv ?? 'CF_API_TOKEN',
+      endpoint: config.endpoint ?? 'https://api.cloudflare.com/client/v4',
+    },
+    type: 'sqlite',
+    // D1 Sessions API isn't available over REST; the runtime returns
+    // null from createRequestScopedDb so emdash falls back to the
+    // singleton Kysely instance per request.
+    supportsRequestScope: false,
+  }
 }
 
 export function d1SessionDriver(config: D1SessionDriverConfig = {}) {
