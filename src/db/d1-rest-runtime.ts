@@ -32,6 +32,7 @@ interface CfQueryEnvelope {
   errors: Array<{ code: number; message: string }>
   result: Array<{
     success: boolean
+    error?: string
     results: unknown[]
     meta: {
       changes?: number
@@ -122,39 +123,44 @@ function makeShim(config: D1RestRuntimeConfig): D1Database {
   }
 
   function makeStatement(sql: string, params: readonly unknown[]): D1PreparedStatement {
+    async function executeAll<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+      const emulated = await emulateKyselySqliteTableInfo<T>(sql, params, postQuery)
+      if (emulated) return emulated
+
+      const [r] = await postQuery({ sql, params })
+      if (r.success === false || r.error) {
+        throw new Error(r.error || 'D1 query failed')
+      }
+      return {
+        results: r.results as T[],
+        success: true,
+        meta: r.meta as unknown as D1Meta & Record<string, unknown>,
+      }
+    }
+
     const stmt = {
       bind(...next: unknown[]): D1PreparedStatement {
         return makeStatement(sql, next)
       },
       async first<T = unknown>(colName?: string): Promise<T | null> {
-        const [r] = await postQuery({ sql, params })
-        const row = (r.results[0] as Record<string, unknown> | undefined) ?? null
+        const result = await executeAll<Record<string, unknown>>()
+        const row = result.results[0] ?? null
         if (row === null) return null
         if (colName !== undefined) return (row[colName] ?? null) as T
         return row as T
       },
       async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-        const [r] = await postQuery({ sql, params })
-        return {
-          results: r.results as T[],
-          success: true,
-          meta: r.meta as unknown as D1Meta & Record<string, unknown>,
-        }
+        return executeAll<T>()
       },
       async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-        const [r] = await postQuery({ sql, params })
-        return {
-          results: (r.results as T[]) ?? [],
-          success: true,
-          meta: r.meta as unknown as D1Meta & Record<string, unknown>,
-        }
+        return executeAll<T>()
       },
       async raw<T = unknown[]>(_options?: { columnNames?: boolean }): Promise<T[]> {
         // The /query endpoint returns objects keyed by column name. To
         // honor the raw() contract (array of arrays), we flatten in JS.
         // Column order matches Object.keys order on the first row.
-        const [r] = await postQuery({ sql, params })
-        const rows = r.results as Array<Record<string, unknown>>
+        const r = await executeAll<Record<string, unknown>>()
+        const rows = r.results
         if (rows.length === 0) return [] as T[]
         const cols = Object.keys(rows[0])
         return rows.map((row) => cols.map((c) => row[c])) as T[]
@@ -200,6 +206,56 @@ function makeShim(config: D1RestRuntimeConfig): D1Database {
     // undefined means emdash skips per-request scoping.
     withSession: undefined as unknown as D1Database['withSession'],
   } as unknown as D1Database
+}
+
+async function emulateKyselySqliteTableInfo<T>(
+  sql: string,
+  params: readonly unknown[],
+  postQuery: (body: unknown, suffix?: string) => Promise<CfQueryEnvelope['result']>,
+): Promise<D1Result<T> | null> {
+  if (!/pragma_table_info\s*\(\s*tl\.name\s*\)/i.test(sql)) return null
+
+  const tableTypes = params.slice(0, 2).filter((v): v is string => typeof v === 'string')
+  const excludedNames = new Set(
+    params.slice(3).filter((v): v is string => typeof v === 'string'),
+  )
+  const [tablesResult] = await postQuery({
+    sql: [
+      'select "name", "sql", "type" from "sqlite_master"',
+      'where "type" in (?, ?) and "name" not like ? order by "name"',
+    ].join(' '),
+    params: [tableTypes[0] ?? 'table', tableTypes[1] ?? 'view', 'sqlite_%'],
+  })
+  if (tablesResult.success === false || tablesResult.error) {
+    throw new Error(tablesResult.error || 'D1 query failed')
+  }
+
+  const rows: Array<Record<string, unknown>> = []
+  for (const table of tablesResult.results as Array<{ name?: unknown }>) {
+    const tableName = typeof table.name === 'string' ? table.name : ''
+    if (!tableName || excludedNames.has(tableName)) continue
+
+    const [pragmaResult] = await postQuery({
+      sql: `PRAGMA table_info(${quoteIdentifier(tableName)})`,
+      params: [],
+    })
+    if (pragmaResult.success === false || pragmaResult.error) {
+      throw new Error(pragmaResult.error || 'D1 query failed')
+    }
+    for (const col of pragmaResult.results as Array<Record<string, unknown>>) {
+      rows.push({ table: tableName, ...col })
+    }
+  }
+
+  return {
+    results: rows as T[],
+    success: true,
+    meta: { changes: 0 } as D1Meta & Record<string, unknown>,
+  }
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`
 }
 
 export function createDialect(rawConfig: Record<string, unknown>): unknown {
