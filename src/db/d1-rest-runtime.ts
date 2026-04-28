@@ -213,7 +213,7 @@ async function emulateKyselySqliteTableInfo<T>(
   params: readonly unknown[],
   postQuery: (body: unknown, suffix?: string) => Promise<CfQueryEnvelope['result']>,
 ): Promise<D1Result<T> | null> {
-  if (!/pragma_table_info\s*\(\s*tl\.name\s*\)/i.test(sql)) return null
+  if (!/pragma_table_info/i.test(sql)) return null
 
   const tableTypes = params.slice(0, 2).filter((v): v is string => typeof v === 'string')
   const excludedNames = new Set(
