@@ -68,10 +68,35 @@ describe('d1SessionDriver runtime', () => {
     )
   })
 
-  it('throws when D1 binding is missing AT FIRST CALL (lazy)', async () => {
+  it('falls back to in-memory store when D1 binding is missing', async () => {
+    // Webitte dev sandbox runs astro dev in a Node container with no
+    // Workers binding (path Y). When env.DB is missing we degrade to
+    // a per-process Map instead of throwing — sessions still work,
+    // just don't survive process restart. Production tenant Workers
+    // always have the binding so this branch is dev-only.
     setEnv({}) // no DB
     const drv = createDriver({ binding: 'DB', table: '_em_sessions' })
-    await expect(drv.getItem('any')).rejects.toThrow(/D1 binding "DB" not found/)
+    expect(await drv.getItem('any')).toBeNull()
+    await drv.setItem('foo', 'bar')
+    expect(await drv.getItem('foo')).toBe('bar')
+    await drv.removeItem('foo')
+    expect(await drv.getItem('foo')).toBeNull()
+    // Crucially: the D1 mock should NOT have been touched, since we
+    // chose the memory path before any prepare() call.
+    expect(d1.prepared).toHaveLength(0)
+  })
+
+  it('respects TTL on the in-memory fallback', async () => {
+    setEnv({}) // no DB → memory mode
+    const drv = createDriver({ binding: 'DB', table: '_em_sessions' })
+    await drv.setItem('temp', 'value', { ttl: 1 })
+    expect(await drv.getItem('temp')).toBe('value')
+    // Past expiry: getItem should return null. Use vi's fake timers
+    // rather than real sleep so the suite stays fast.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(Date.now() + 2000))
+    expect(await drv.getItem('temp')).toBeNull()
+    vi.useRealTimers()
   })
 
   it('getItem returns null for missing key', async () => {
