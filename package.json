@@ -1,6 +1,6 @@
 {
   "name": "@webitte-hosting/emdash",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Multi-tenant isolation adapters for EmDash on Cloudflare. R2 prefixing, D1-backed Astro session driver, tenant-scoped Cloudflare Images / Stream / Vectorize.",
   "license": "MIT",
   "type": "module",

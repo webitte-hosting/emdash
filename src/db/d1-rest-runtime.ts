@@ -234,11 +234,20 @@ async function emulateKyselySqliteTableInfo<T>(
   for (const table of tablesResult.results as Array<{ name?: unknown }>) {
     const tableName = typeof table.name === 'string' ? table.name : ''
     if (!tableName || excludedNames.has(tableName)) continue
+    if (tableName.startsWith('_cf_')) continue
 
-    const [pragmaResult] = await postQuery({
-      sql: `PRAGMA table_info(${quoteIdentifier(tableName)})`,
-      params: [],
-    })
+    let pragmaResult: CfQueryEnvelope['result'][number]
+    try {
+      ;[pragmaResult] = await postQuery({
+        sql: `PRAGMA table_info(${quoteIdentifier(tableName)})`,
+        params: [],
+      })
+    } catch (err) {
+      if (err instanceof D1RestError && err.errors.some((e) => /SQLITE_AUTH/i.test(e.message))) {
+        continue
+      }
+      throw err
+    }
     if (pragmaResult.success === false || pragmaResult.error) {
       throw new Error(pragmaResult.error || 'D1 query failed')
     }
