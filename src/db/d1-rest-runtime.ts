@@ -54,13 +54,27 @@ class D1RestError extends Error {
 }
 
 function readEnv(name: string): string {
-  const value = (env as Record<string, unknown>)[name]
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(
-      `d1RestDriver: env "${name}" is not set. The webitte sandbox is responsible for injecting it.`,
-    )
+  // Look first in `cloudflare:workers` env — that's where production
+  // tenant Workers find these values (declared as bindings/vars on
+  // the deployed script). In the webitte dev sandbox we run astro
+  // dev as a Node process and inject via process.env on startProcess;
+  // miniflare wraps the worker but doesn't surface arbitrary
+  // process.env vars through `cloudflare:workers env` unless they're
+  // declared in wrangler.jsonc. So we have to fall back to
+  // process.env directly. nodejs_compat is on for these templates,
+  // so `process` is reachable inside the worker context.
+  const fromBindings = (env as Record<string, unknown>)[name]
+  if (typeof fromBindings === 'string' && fromBindings.length > 0) return fromBindings
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const proc = (globalThis as any).process
+  if (proc && proc.env && typeof proc.env[name] === 'string' && proc.env[name].length > 0) {
+    return proc.env[name] as string
   }
-  return value
+
+  throw new Error(
+    `d1RestDriver: env "${name}" is not set. The webitte sandbox is responsible for injecting it (via startProcess env or wrangler vars).`,
+  )
 }
 
 /**
